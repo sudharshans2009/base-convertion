@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import "./BaseConverter.css";
 
 const bases = [
@@ -22,6 +22,31 @@ const BaseConverter: React.FC = () => {
   const [viewBase, setViewBase] = useState<number | null>(null);
   const [processSteps, setProcessSteps] = useState<string[]>([]);
 
+  // Beta feature toggle
+  const [betaMode, setBetaMode] = useState<boolean>(false);
+
+  useEffect(() => {
+    const saved = localStorage.getItem('baseConverter_betaMode');
+    setBetaMode(saved === 'true');
+  }, []);
+
+  const toggleBetaMode = () => {
+    const newBetaMode = !betaMode;
+    setBetaMode(newBetaMode);
+    localStorage.setItem('baseConverter_betaMode', newBetaMode.toString());
+    
+    // Clear fractional inputs when disabling beta
+    if (!newBetaMode) {
+      const newValues = { ...values };
+      Object.keys(newValues).forEach(key => {
+        if (newValues[parseInt(key)].includes('.')) {
+          newValues[parseInt(key)] = newValues[parseInt(key)].split('.')[0];
+        }
+      });
+      setValues(newValues);
+    }
+  };
+
   const handleButtonClick = (base: number) => {
     setActiveBase(base);
     setViewBase(null);
@@ -33,7 +58,7 @@ const BaseConverter: React.FC = () => {
     const intVal = intPart ? parseInt(intPart, b) : 0;
     if (isNaN(intVal)) return NaN;
     let fracVal = 0;
-    if (fracPart) {
+    if (fracPart && betaMode) {
       for (let i = 0; i < fracPart.length; i++) {
         const digit = parseInt(fracPart[i], b);
         if (isNaN(digit)) return NaN;
@@ -44,11 +69,11 @@ const BaseConverter: React.FC = () => {
   };
 
   // convert a JS number to a string in base `b`, up to `precision` fractional digits
-  const decimalToBase = (num: number, b: number, precision = 10): string => {
+  const decimalToBase = (num: number, b: number, precision = 4): string => {
     const intVal = Math.floor(num);
     let frac = num - intVal;
     let res = intVal.toString(b).toUpperCase();
-    if (frac === 0) return res;
+    if (frac === 0 || !betaMode) return res;
     res += ".";
     for (let i = 0; i < precision; i++) {
       frac *= b;
@@ -63,15 +88,55 @@ const BaseConverter: React.FC = () => {
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const input = e.target.value.trim();
 
+    // Prevent fractional input if beta mode is off
+    if (!betaMode && input.includes('.')) {
+      return;
+    }
+
+    // Validate input characters for the current base
+    const isValidInput = (value: string, base: number): boolean => {
+      const cleanValue = value.replace(/\s/g, '').replace('.', ''); // Remove spaces and decimal point
+      for (const char of cleanValue) {
+        const digit = parseInt(char, base);
+        if (isNaN(digit)) return false;
+      }
+      return true;
+    };
+
+    // Check if input contains invalid characters for the current base
+    if (input !== '' && !isValidInput(input, activeBase)) {
+      setValues({
+        2: activeBase === 2 ? input : "Invalid Value",
+        8: activeBase === 8 ? input : "Invalid Value", 
+        10: activeBase === 10 ? input : "Invalid Value",
+        16: activeBase === 16 ? input : "Invalid Value",
+      });
+      return;
+    }
+
     // handle trailing dot (e.g. "A." or "10.")
     const isTrailingDot = input.endsWith(".") && !input.includes("..");
-    if (isTrailingDot) {
+    if (isTrailingDot && betaMode) {
       // parse only integer part
       const intStr = input.slice(0, -1);
+      if (!isValidInput(intStr, activeBase)) {
+        setValues({
+          2: activeBase === 2 ? input : "Invalid Value",
+          8: activeBase === 8 ? input : "Invalid Value",
+          10: activeBase === 10 ? input : "Invalid Value", 
+          16: activeBase === 16 ? input : "Invalid Value",
+        });
+        return;
+      }
       const decInt = parseBaseToDecimal(intStr, activeBase);
       if (isNaN(decInt)) {
         // invalid integer -> show raw in active only
-        setValues({ 2: "", 8: "", 10: "", 16: "", [activeBase]: input });
+        setValues({
+          2: activeBase === 2 ? input : "Invalid Value",
+          8: activeBase === 8 ? input : "Invalid Value",
+          10: activeBase === 10 ? input : "Invalid Value",
+          16: activeBase === 16 ? input : "Invalid Value",
+        });
       } else {
         // convert integer part to each base and append the dot
         setValues({
@@ -84,6 +149,12 @@ const BaseConverter: React.FC = () => {
       return;
     }
 
+    // limit to max 4 digits after decimal in beta mode
+    if (betaMode && input.includes('.')) {
+      const fracPart = input.split('.')[1] || '';
+      if (fracPart.length > 4) return;
+    }
+
     if (input === "") {
       setValues({ 2: "", 8: "", 10: "", 16: "" });
       return;
@@ -92,7 +163,12 @@ const BaseConverter: React.FC = () => {
     const dec = parseBaseToDecimal(input, activeBase);
     if (isNaN(dec)) {
       // invalid input -> show it only in active, clear others
-      setValues({ 2: "", 8: "", 10: "", 16: "", [activeBase]: input });
+      setValues({
+        2: activeBase === 2 ? input : "Invalid Value",
+        8: activeBase === 8 ? input : "Invalid Value", 
+        10: activeBase === 10 ? input : "Invalid Value",
+        16: activeBase === 16 ? input : "Invalid Value",
+      });
       return;
     }
 
@@ -104,6 +180,77 @@ const BaseConverter: React.FC = () => {
     });
   };
 
+  const generateFractionalSteps = (fracPart: string, fromBase: number, toBase: number): any[] => {
+    const steps: any[] = [];
+    
+    if (fromBase !== 10) {
+      // Converting fractional part from other base to decimal
+      steps.push({
+        operation: `Converting fractional part .${fracPart} to decimal:`,
+        finalValue: '--',
+        isHeader: true
+      });
+      
+      let fracDecimal = 0;
+      for (let i = 0; i < fracPart.length; i++) {
+        const digit = parseInt(fracPart[i], fromBase);
+        const divisor = Math.pow(fromBase, i + 1);
+        const contribution = digit / divisor;
+        fracDecimal += contribution;
+        
+        steps.push({
+          operation: `${fracPart[i]} × ${fromBase}^(-${i + 1})`,
+          finalValue: `${digit} ÷ ${divisor} = ${contribution.toFixed(6)}`
+        });
+      }
+      
+      steps.push({
+        operation: 'Sum of fractional parts',
+        finalValue: `${fracDecimal.toFixed(6)} (decimal)`,
+        isHighlight: true
+      });
+    }
+    
+    if (toBase !== 10) {
+      // Converting decimal fractional part to target base
+      const decFrac = fromBase === 10 ? 
+        parseFloat('0.' + fracPart) : 
+        parseFloat(steps[steps.length - 1]?.finalValue.split(' ')[0] || '0');
+      
+      steps.push({
+        operation: `Converting decimal ${decFrac.toFixed(6)} to base ${toBase}:`,
+        finalValue: '--',
+        isHeader: true
+      });
+      
+      let frac = decFrac;
+      const results: string[] = [];
+      
+      for (let i = 0; i < 4 && frac > 0; i++) {
+        frac *= toBase;
+        const digit = Math.floor(frac);
+        const digitStr = toBase === 16 && digit >= 10 ? 
+          String.fromCharCode(65 + digit - 10) : digit.toString();
+        
+        steps.push({
+          operation: `${(frac / toBase).toFixed(6)} × ${toBase}`,
+          finalValue: `${frac.toFixed(6)}, integer part: ${digitStr}`
+        });
+        
+        results.push(digitStr);
+        frac -= digit;
+      }
+      
+      steps.push({
+        operation: 'Read integer parts top-down',
+        finalValue: `.${results.join('')} (base ${toBase})`,
+        isHighlight: true
+      });
+    }
+    
+    return steps;
+  };
+
   const handleViewProcess = (targetBase: number) => {
     // get the current input value from whichever base is active
     const rawInput = values[activeBase];
@@ -113,20 +260,22 @@ const BaseConverter: React.FC = () => {
     const dec = parseBaseToDecimal(rawInput.replace(/\.$/, ""), activeBase);
     if (isNaN(dec)) return;
 
-    const intPart = Math.floor(dec);
+    const [intPart, fracPart] = rawInput.replace(/\.$/, "").split(".");
+    const intVal = Math.floor(dec);
 
     // generate conversion steps from activeBase to targetBase
     const steps: {
       operation: string;
       finalValue: string;
       isHighlight?: boolean;
+      isHeader?: boolean;
     }[] = [];
 
     // if converting from non-decimal, first show conversion to decimal
     if (activeBase !== 10) {
       if (activeBase === 2) {
         // binary to decimal: show positional values
-        const digits = rawInput.replace(/\s/g, "").split("").reverse();
+        const digits = intPart.replace(/\s/g, "").split("").reverse();
         digits.forEach((digit, i) => {
           const power = Math.pow(2, i);
           const product = parseInt(digit) * power;
@@ -146,7 +295,7 @@ const BaseConverter: React.FC = () => {
         });
       } else {
         // general base to decimal
-        const digits = rawInput.split("").reverse();
+        const digits = intPart.split("").reverse();
         digits.forEach((digit, i) => {
           const digitVal = parseInt(digit, activeBase);
           const power = Math.pow(activeBase, i);
@@ -168,9 +317,15 @@ const BaseConverter: React.FC = () => {
       }
     }
 
+    // Add fractional conversion if in beta mode and fractional part exists
+    if (betaMode && fracPart) {
+      const fracSteps = generateFractionalSteps(fracPart, activeBase, targetBase);
+      steps.push(...fracSteps);
+    }
+
     // if target is not decimal, show conversion from decimal to target
     if (targetBase !== 10) {
-      let q = intPart;
+      let q = intVal;
       if (q === 0) {
         steps.push({
           operation: `0 ÷ ${targetBase}`,
@@ -214,8 +369,23 @@ const BaseConverter: React.FC = () => {
 
   return (
     <div className="converter">
-      <h2>Base Converter</h2>
-      <div className="legand">
+      <div className="header-row">
+        <h2>Base Converter</h2>
+        <button 
+          className={`beta-toggle ${betaMode ? 'active' : ''}`}
+          onClick={toggleBetaMode}
+        >
+          Beta {betaMode ? 'ON' : 'OFF'}
+        </button>
+      </div>
+      
+      {betaMode && (
+        <div className="beta-warning">
+          ⚠️ Beta Mode: Fractional number conversion is extremely unstable and may produce incorrect results
+        </div>
+      )}
+      
+      <div className="legend">
         <h4>[?]: View Process</h4>
       </div>
       <div className="base-buttons">
@@ -240,11 +410,11 @@ const BaseConverter: React.FC = () => {
                 value={values[b.value]}
                 disabled={activeBase !== b.value}
                 onChange={activeBase === b.value ? handleChange : undefined}
-                placeholder={activeBase === b.value ? `Enter ${b.label}` : ""}
+                placeholder={activeBase === b.value ? `Enter ${b.label}${betaMode ? ' (decimals allowed)' : ''}` : ""}
               />
               <button
                 className="view-process-btn"
-                disabled={activeBase === b.value}
+                disabled={activeBase === b.value || !values[b.value] || values[b.value] === "Invalid Value"}
                 onClick={() => handleViewProcess(b.value)}
               >
                 ?
@@ -259,7 +429,7 @@ const BaseConverter: React.FC = () => {
           <h3>
             Conversion to {bases.find((b) => b.value === viewBase)?.label}
           </h3>
-          <div className="legand">
+          <div className="legend">
             <h4>[Q]: Quotient</h4>
             <h4>[R]: Remainder</h4>
           </div>
@@ -276,7 +446,7 @@ const BaseConverter: React.FC = () => {
                   (row: any, i: number) => (
                     <tr
                       key={i}
-                      className={row.isHighlight ? "highlight-row" : ""}
+                      className={`${row.isHighlight ? "highlight-row" : ""} ${row.isHeader ? "header-row" : ""}`}
                     >
                       <td>{row.operation}</td>
                       <td>{row.finalValue}</td>
